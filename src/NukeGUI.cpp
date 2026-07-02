@@ -141,7 +141,13 @@ struct NukeGUIModule : public NUKEModule
 
         ImGui::NewFrame();
         if (instance->currentScene)                          // the game draws its UI via Component::OnGUI
+        {
+            // Game lock: OnGUI enters the script VM (gui(self)) on the render thread while
+            // the FIXED thread may be inside Lua (fixedUpdate/collision hooks) — serialize.
+            instance->currentScene->LockGame();
             for (Atom* a : instance->currentScene->GetHierarchy()) DispatchOnGUI(a);
+            instance->currentScene->UnlockGame();
+        }
         ImGui::Render();
 
         ImDrawData* dd = ImGui::GetDrawData();
