@@ -350,14 +350,14 @@ struct NukeGUIModule : public NUKEModule
 		FeedInput(r, inside);                        // keyboard / typed text / wheel (2.5)
 
 		ImGui::NewFrame();
-		if (instance->currentScene)                          // the game draws its UI via Component::OnGUI
+		if (instance->currentWorld)                          // the game draws its UI via Component::OnGUI
 		{
 			// Game lock: OnGUI enters the script VM (gui(self)) on the render thread while
 			// the FIXED thread may be inside Lua (fixedUpdate/collision hooks) — serialize.
-			instance->currentScene->LockGame();
-			for (Atom* a : instance->currentScene->GetHierarchy()) DispatchOnGUI(a);
+			instance->currentWorld->LockGame();
+			for (Atom* a : instance->currentWorld->GetHierarchy()) DispatchOnGUI(a);
 			nuke::Ui::Emit();                                // retained tree (2.5), same lock
-			instance->currentScene->UnlockGame();
+			instance->currentWorld->UnlockGame();
 		}
 		ImGui::Render();
 
