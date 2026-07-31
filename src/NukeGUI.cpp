@@ -1,16 +1,9 @@
-// NukeGUI — runtime immediate-mode GUI (gameplay plugin).
-//
-// imgui vendored STATICALLY (own context; internal symbols) — ships in the Player, no extra dll, no
-// clash with the editor's NukeImGui. Renderer-INDEPENDENT: draw lists -> neutral nuke::NukeUIDrawData
-// -> iRender 2D seam. The GAME draws via the engine's nuke::iGUI (Component::OnGUI); this plugin is just
-// the backend that implements iGUI with imgui and composites into the camera/viewport RT.
-//
-// v2 (roadmap 2.5): full widget set (input text / combo / image / progress), persistent styling
-// (neutral NukeUIColor/NukeUIStyleVar ids), keyboard+scroll+clipboard fed from the iRender input
-// seam, and the retained nuke::Ui tree emitted after the OnGUI sweep.
+// NukeGUI — runtime immediate-mode GUI backend: implements the engine's nuke::iGUI with a
+// STATICALLY vendored imgui (own context, so no clash with the editor's NukeImGui) and
+// composites into the camera/viewport RT via the neutral NukeUIDrawData / iRender 2D seam.
 #include <interface/NUKEEInteface.h>   // NUKEModule + AppInstance
 #include <interface/iGUI.h>            // engine GUI facade (game codes against this)
-#include <API/iGUI.h>                  // retained Ui layer (engine) — emitted per frame
+#include <API/iGUI.h>                  // retained Ui layer, emitted per frame
 #include <render/irender.h>            // iRender + NukeUIDrawData (neutral 2D seam)
 #include <API/Model/Atom.h>
 #include <API/Model/Component.h>
@@ -24,7 +17,7 @@
 
 using namespace nuke;
 
-// --- GLFW -> ImGuiKey (the seam's key codes are GLFW numbering) ----------------------------
+// The input seam's key codes are GLFW numbering.
 static ImGuiKey KeyToImGuiKey(int key)
 {
 	switch (key)
@@ -66,7 +59,7 @@ static iRender* g_clipRender = nullptr;
 static const char* ClipGet(ImGuiContext*) { return g_clipRender ? g_clipRender->getClipboardText() : ""; }
 static void ClipSet(ImGuiContext*, const char* t) { if (g_clipRender) g_clipRender->setClipboardText(t); }
 
-// imgui-backed implementation of the engine's iGUI (called inside Component::OnGUI via nuke::GUI()).
+// imgui-backed implementation of the engine's iGUI, reached from Component::OnGUI via nuke::GUI().
 struct GUIBackend : iGUI
 {
 	iRender* render = nullptr;                 // for the image cache (owned textures)
@@ -86,7 +79,6 @@ struct GUIBackend : iGUI
 	bool Checkbox(const char* l, bool* v) override { return ImGui::Checkbox(l, v); }
 	bool SliderFloat(const char* l, float* v, float lo, float hi) override { return ImGui::SliderFloat(l, v, lo, hi); }
 
-	// --- v2 widgets -------------------------------------------------------------------
 	bool InputText(const char* l, char* buf, int cap) override { return ImGui::InputText(l, buf, (size_t)cap); }
 	bool Combo(const char* l, int* cur, const char* const* items, int n) override
 	{ return ImGui::Combo(l, cur, items, n); }
@@ -99,7 +91,6 @@ struct GUIBackend : iGUI
 		auto it = images.find(texGuid);
 		if (it == images.end())
 		{
-			// Resolve once: decode the engine texture asset and upload through the seam.
 			CachedImage ci;
 			if (Texture* t = ResDB::getSingleton()->GetTexture(texGuid))
 			{
@@ -110,7 +101,7 @@ struct GUIBackend : iGUI
 					ci.w = (float)t->width; ci.h = (float)t->height;
 				}
 			}
-			it = images.emplace(texGuid, ci).first;   // negative results cache too (no per-frame retry)
+			it = images.emplace(texGuid, ci).first;   // failures cache too: no per-frame retry
 		}
 		if (!it->second.tex) { ImGui::TextDisabled("[image: %s]", texGuid); return; }
 		const float iw = w > 0 ? w : it->second.w;
@@ -118,7 +109,7 @@ struct GUIBackend : iGUI
 		ImGui::Image((ImTextureID)it->second.tex, ImVec2(iw, ih));
 	}
 
-	// --- styling (persistent; neutral ids -> imgui) -------------------------------------
+	// Neutral NUKEUI_COL_* -> imgui; ImGuiCol_COUNT = unmapped.
 	static ImGuiCol MapColor(int what)
 	{
 		switch (what)
@@ -201,7 +192,7 @@ struct GUIBackend : iGUI
 
 static void DispatchOnGUI(Atom* a)
 {
-	if (!a) return;
+	if (!a || !a->enabled) return;   // disabled atom = whole subtree off
 	for (Component* c : a->components) if (c && c->enabled) c->OnGUI();
 	for (Atom* ch : a->children) DispatchOnGUI(ch);
 }
@@ -226,18 +217,16 @@ struct NukeGUIModule : public NUKEModule
 		tags = { "gui", "imgui", "runtime-ui" };
 	}
 
-	// Service metadata: the active runtime-GUI backend (SetGUIBackend already enforces a
-	// single live backend; provides() makes that exclusivity visible to the loader/window).
-	const char* provides() override { return "gui"; }
+	const char* provides() override { return "gui"; }   // only one live GUI backend at a time
 
 	void OnLoad() override { IMGUI_CHECKVERSION(); ctx = ImGui::CreateContext(); }
 
 	void Run(AppInstance* inst) override
 	{
 		instance = inst; stopped = false;
-		SetGUIBackend(&backend);                                  // game's nuke::GUI() now forwards here
+		SetGUIBackend(&backend);                                  // nuke::GUI() now forwards here
 		if (instance && instance->render)
-			instance->render->setOnRender([this] { Frame(); });  // composite into the camera/viewport RT
+			instance->render->setOnRender([this] { Frame(); });
 	}
 
 	bool HasSettings() override { return false; }
@@ -283,7 +272,6 @@ struct NukeGUIModule : public NUKEModule
 		io.IniFilename = nullptr;
 		io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;
 		io.Fonts->AddFontDefault();
-		// Clipboard through the render seam (GLFW) — InputText Ctrl+C/V/X works in-game.
 		ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
 		pio.Platform_GetClipboardTextFn = &ClipGet;
 		pio.Platform_SetClipboardTextFn = &ClipSet;
@@ -294,8 +282,7 @@ struct NukeGUIModule : public NUKEModule
 	{
 		ImGuiIO& io = ImGui::GetIO();
 
-		// Typed characters + key transitions from the seam queues (GLFW numbering). The
-		// queues are drained even when the cursor is outside so stale input can't burst in.
+		// The seam queues are drained even when the cursor is outside, or stale input bursts in later.
 		unsigned int chars[64];
 		int n = r->fetchUIChars(chars, 64);
 		for (int i = 0; i < n; ++i) if (inside) io.AddInputCharacter(chars[i]);
@@ -306,7 +293,7 @@ struct NukeGUIModule : public NUKEModule
 		{
 			if (actions[i] != 0 && actions[i] != 1) continue;   // press/release only (no repeat: imgui does it)
 			const bool down = actions[i] == 1;
-			// Modifier state first — imgui wants it before the key that uses it.
+			// Modifier state must be sent BEFORE the key that uses it.
 			io.AddKeyEvent(ImGuiMod_Ctrl,  (mods[i] & 0x2) != 0);
 			io.AddKeyEvent(ImGuiMod_Shift, (mods[i] & 0x1) != 0);
 			io.AddKeyEvent(ImGuiMod_Alt,   (mods[i] & 0x4) != 0);
@@ -337,8 +324,7 @@ struct NukeGUIModule : public NUKEModule
 		if (io.DeltaTime <= 0.0f) io.DeltaTime = 1.0f / 60.0f;
 		last = now; haveLast = true;
 
-		// Input: map to the target rect; only deliver clicks when the cursor is INSIDE the viewport
-		// (so the game UI owns input there, and clicks elsewhere don't hit it).
+		// Clicks are only delivered when the cursor is INSIDE the viewport rect.
 		double mx = 0, my = 0; r->getCursorPos(mx, my);
 		float lx = (float)(mx - instance->uiX), ly = (float)(my - instance->uiY);
 		bool inside = lx >= 0 && ly >= 0 && lx < (float)tw && ly < (float)th;
@@ -347,16 +333,16 @@ struct NukeGUIModule : public NUKEModule
 		io.AddMouseButtonEvent(1, inside && r->isMouseButtonDown(1));
 		io.AddMouseButtonEvent(2, inside && r->isMouseButtonDown(2));
 		backend.render = r;
-		FeedInput(r, inside);                        // keyboard / typed text / wheel (2.5)
+		FeedInput(r, inside);
 
 		ImGui::NewFrame();
-		if (instance->currentWorld)                          // the game draws its UI via Component::OnGUI
+		if (instance->currentWorld)
 		{
-			// Game lock: OnGUI enters the script VM (gui(self)) on the render thread while
-			// the FIXED thread may be inside Lua (fixedUpdate/collision hooks) — serialize.
+			// OnGUI enters the script VM on the render thread while the fixed thread may also
+			// be inside Lua — both sweeps must run under the game lock.
 			instance->currentWorld->LockGame();
 			for (Atom* a : instance->currentWorld->GetHierarchy()) DispatchOnGUI(a);
-			nuke::Ui::Emit();                                // retained tree (2.5), same lock
+			nuke::Ui::Emit();                                // retained tree, same lock
 			instance->currentWorld->UnlockGame();
 		}
 		ImGui::Render();
