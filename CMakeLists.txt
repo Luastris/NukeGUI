@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(NukeGUI CXX)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../NukeEngine/cmake/NukeRunDir.cmake")   # NUKE_RUN_SUBDIR: x64 / macos / linux
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -25,10 +27,26 @@ add_library(NukeGUI SHARED
 # NOTE: do NOT define IMGUI_API here — imgui compiles with the default (empty) linkage so its symbols
 # are internal to NukeGUI.dll and never clash with the editor's exported NukeImGui imgui.
 target_compile_definitions(NukeGUI PRIVATE
-    WIN32 _WINDOWS NOMINMAX _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS
+    _USE_MATH_DEFINES
     GLM_ENABLE_EXPERIMENTAL
-    BOOST_ALL_DYN_LINK
 )
+if(WIN32)
+    target_compile_definitions(NukeGUI PRIVATE
+        WIN32 _WINDOWS NOMINMAX _CRT_SECURE_NO_WARNINGS
+        BOOST_ALL_DYN_LINK
+    )
+else()
+    # The vendored imgui MUST stay internal (same intent as the Windows build): with default
+    # visibility its weak inline symbols coalesce with libNukeImGui's copy across images and
+    # NukeGUI ends up reading the OTHER context pointer (null → segfault in NewFrame).
+    # `plugin` + the ABI stamps carry explicit default-visibility attributes and stay exported.
+    target_compile_options(NukeGUI PRIVATE
+        -fvisibility=hidden -fvisibility-inlines-hidden
+        -Wno-c++11-narrowing -Wno-unknown-attributes)
+    set_target_properties(NukeGUI PROPERTIES
+        PREFIX ""
+        BUILD_RPATH "@loader_path/..;$ORIGIN/..")
+endif()
 
 target_include_directories(NukeGUI PRIVATE
     ${NUKE_ROOT}/NukeEngine
@@ -40,14 +58,14 @@ target_include_directories(NukeGUI PRIVATE
 )
 
 target_link_directories(NukeGUI PRIVATE
-    ${NUKE_ROOT}/NukeEngine/x64/$<CONFIG>     # NukeEngine.lib
+    ${NUKE_ROOT}/NukeEngine/${NUKE_RUN_SUBDIR}/$<CONFIG>     # NukeEngine.lib
     ${VCPKG_INSTALLED}/$<$<CONFIG:Debug>:debug/>lib
 )
 
 target_link_libraries(NukeGUI PRIVATE NukeEngine)
 
 # Deploy the plugin DLL into the editor's modules/ folder.
-set(MODULES_DIR "${NUKE_ROOT}/NukeEngine/x64/$<CONFIG>/modules")
+set(MODULES_DIR "${NUKE_ROOT}/NukeEngine/${NUKE_RUN_SUBDIR}/$<CONFIG>/modules")
 add_custom_command(TARGET NukeGUI POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${MODULES_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:NukeGUI>" "${MODULES_DIR}/"
