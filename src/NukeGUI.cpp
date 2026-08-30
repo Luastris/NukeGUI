@@ -8,6 +8,7 @@
 #include <API/Model/Atom.h>
 #include <API/Model/Component.h>
 #include <API/Model/Texture.h>
+#include <API/Model/DevConsole.h>     // the engine dev console draws inside our frame
 #include <API/Model/resdb.h>
 #include <imgui.h>
 #include <map>
@@ -182,6 +183,47 @@ struct GUIBackend : iGUI
 		if (w > 0 && h > 0) ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
 	}
 
+	// ---- dev-console widgets (iGUI tail) ----
+	void TextColored(float r, float g, float b, float a, const char* s) override
+	{ ImGui::TextColored(ImVec4(r, g, b, a), "%s", s ? s : ""); }
+
+	// Up/Down replace the edit buffer with history lines; ` and ~ are filtered (console toggle).
+	struct HistCtx { const char* const* items; int count; int* pos; };
+	static int InputCb(ImGuiInputTextCallbackData* d)
+	{
+		HistCtx* c = (HistCtx*)d->UserData;
+		if (d->EventFlag == ImGuiInputTextFlags_CallbackCharFilter)
+			return (d->EventChar == '`' || d->EventChar == '~') ? 1 : 0;
+		if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory && c && c->count > 0)
+		{
+			int& p = *c->pos;
+			if (d->EventKey == ImGuiKey_UpArrow)        p = p < 0 ? c->count - 1 : (p > 0 ? p - 1 : 0);
+			else if (d->EventKey == ImGuiKey_DownArrow) { if (p >= 0 && ++p >= c->count) p = -1; }
+			d->DeleteChars(0, d->BufTextLen);
+			if (p >= 0 && p < c->count) d->InsertChars(0, c->items[p]);
+		}
+		return 0;
+	}
+	std::map<unsigned int, int> histPos;   // per-widget history cursor (-1 = fresh line)
+	bool InputTextHistory(const char* label, char* buf, int cap,
+	                      const char* const* history, int histCount) override
+	{
+		auto it = histPos.find(ImGui::GetID(label));
+		if (it == histPos.end()) it = histPos.emplace(ImGui::GetID(label), -1).first;
+		HistCtx ctx{ history, histCount, &it->second };
+		ImGui::SetNextItemWidth(-1);
+		const bool submit = ImGui::InputText(label, buf, (size_t)cap,
+			ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
+			ImGuiInputTextFlags_CallbackCharFilter, &InputCb, &ctx);
+		if (submit) it->second = -1;
+		return submit;
+	}
+	void FocusNextWidget() override { ImGui::SetKeyboardFocusHere(); }
+	void BeginScrollRegion(const char* id, float h) override
+	{ ImGui::BeginChild(id, ImVec2(0, h <= 0 ? -ImGui::GetFrameHeightWithSpacing() : h)); }
+	void EndScrollRegion() override { ImGui::EndChild(); }
+	void ScrollToBottom() override { ImGui::SetScrollHereY(1.0f); }
+
 	void DropImageCache(iRender* r)
 	{
 		for (auto& kv : images)
@@ -343,6 +385,7 @@ struct NukeGUIModule : public NUKEModule
 			instance->currentWorld->LockGame();
 			for (Atom* a : instance->currentWorld->GetHierarchy()) DispatchOnGUI(a);
 			nuke::Ui::Emit();                                // retained tree, same lock
+			nuke::Console::Emit();                           // dev console on top, same lock
 			instance->currentWorld->UnlockGame();
 		}
 		ImGui::Render();
