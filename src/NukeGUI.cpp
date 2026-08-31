@@ -10,6 +10,7 @@
 #include <API/Model/Texture.h>
 #include <API/Model/resdb.h>
 #include <imgui.h>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -217,11 +218,84 @@ struct GUIBackend : iGUI
 		if (submit) it->second = -1;
 		return submit;
 	}
+	// Generic command-line field (see iGUI.h): key events go OUT, text replacement and the
+	// character filter come IN. No caller logic (history/completion) lives in this backend.
+	struct KeysCtx { const char* setText; const char* filter; int* key; };
+	static int KeysCb(ImGuiInputTextCallbackData* d)
+	{
+		KeysCtx* c = (KeysCtx*)d->UserData;
+		if (d->EventFlag == ImGuiInputTextFlags_CallbackCharFilter)
+			return (c->filter && d->EventChar < 128 && strchr(c->filter, (char)d->EventChar)) ? 1 : 0;
+		if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory)
+		{ if (c->key) *c->key = d->EventKey == ImGuiKey_UpArrow ? 1 : 2; }
+		else if (d->EventFlag == ImGuiInputTextFlags_CallbackCompletion)
+		{ if (c->key) *c->key = 3; }
+		else if (d->EventFlag == ImGuiInputTextFlags_CallbackAlways && c->setText)
+		{
+			d->DeleteChars(0, d->BufTextLen);
+			d->InsertChars(0, c->setText);
+			c->setText = nullptr;   // consumed
+		}
+		return 0;
+	}
+	bool InputTextKeys(const char* label, char* buf, int cap,
+	                   const char* setText, const char* filterChars, int* key) override
+	{
+		if (key) *key = 0;
+		// Typing anywhere in this window belongs to the field: grab the focus BEFORE the
+		// widget so the queued characters land in the buffer this same frame.
+		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+		    && !ImGui::IsAnyItemActive() && ImGui::GetIO().InputQueueCharacters.Size > 0)
+			ImGui::SetKeyboardFocusHere();
+		KeysCtx ctx{ setText, filterChars, key };
+		ImGui::SetNextItemWidth(-1);
+		const bool submit = ImGui::InputText(label, buf, (size_t)cap,
+			ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
+			ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackCharFilter |
+			ImGuiInputTextFlags_CallbackAlways, &KeysCb, &ctx);
+		// The field wasn't active this frame (no callback ran): apply the replacement directly.
+		if (ctx.setText && !ImGui::IsItemActive())
+		{
+			strncpy(buf, ctx.setText, (size_t)cap - 1);
+			buf[cap - 1] = 0;
+		}
+		return submit;
+	}
 	void FocusNextWidget() override { ImGui::SetKeyboardFocusHere(); }
+	// h <= 0: fill minus one input row, and -h EXTRA text rows (console autocomplete hints).
 	void BeginScrollRegion(const char* id, float h) override
-	{ ImGui::BeginChild(id, ImVec2(0, h <= 0 ? -ImGui::GetFrameHeightWithSpacing() : h)); }
+	{
+		ImGui::BeginChild(id, ImVec2(0, h <= 0
+			? -(ImGui::GetFrameHeightWithSpacing() - h * ImGui::GetTextLineHeightWithSpacing())
+			: h));
+	}
 	void EndScrollRegion() override { ImGui::EndChild(); }
 	void ScrollToBottom() override { ImGui::SetScrollHereY(1.0f); }
+
+	// Perf-overlay primitives: the foreground draw list paints over every GUI window.
+	void OverlayLine(float x1, float y1, float x2, float y2,
+	                 float r, float g, float b, float a, float th) override
+	{
+		ImGui::GetForegroundDrawList()->AddLine(ImVec2(x1, y1), ImVec2(x2, y2),
+			ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)), th);
+	}
+	void OverlayRect(float x, float y, float w, float h,
+	                 float r, float g, float b, float a, float rounding) override
+	{
+		ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h),
+			ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)), rounding);
+	}
+	void OverlayText(float x, float y, float r, float g, float b, float a, const char* s) override
+	{
+		ImGui::GetForegroundDrawList()->AddText(ImVec2(x, y),
+			ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)), s);
+	}
+	void OverlayTextSize(const char* s, float* w, float* h) override
+	{
+		const ImVec2 sz = ImGui::CalcTextSize(s);
+		if (w) *w = sz.x;
+		if (h) *h = sz.y;
+	}
 
 	void DropImageCache(iRender* r)
 	{
