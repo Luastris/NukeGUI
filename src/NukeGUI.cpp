@@ -8,7 +8,6 @@
 #include <API/Model/Atom.h>
 #include <API/Model/Component.h>
 #include <API/Model/Texture.h>
-#include <API/Model/DevConsole.h>     // the engine dev console draws inside our frame
 #include <API/Model/resdb.h>
 #include <imgui.h>
 #include <map>
@@ -232,13 +231,6 @@ struct GUIBackend : iGUI
 	}
 };
 
-static void DispatchOnGUI(Atom* a)
-{
-	if (!a || !a->enabled) return;   // disabled atom = whole subtree off
-	for (Component* c : a->components) if (c && c->enabled) c->OnGUI();
-	for (Atom* ch : a->children) DispatchOnGUI(ch);
-}
-
 struct NukeGUIModule : public NUKEModule
 {
 	ImGuiContext* ctx = nullptr;
@@ -378,16 +370,9 @@ struct NukeGUIModule : public NUKEModule
 		FeedInput(r, inside);
 
 		ImGui::NewFrame();
-		if (instance->currentWorld)
-		{
-			// OnGUI enters the script VM on the render thread while the fixed thread may also
-			// be inside Lua — both sweeps must run under the game lock.
-			instance->currentWorld->LockGame();
-			for (Atom* a : instance->currentWorld->GetHierarchy()) DispatchOnGUI(a);
-			nuke::Ui::Emit();                                // retained tree, same lock
-			nuke::Console::Emit();                           // dev console on top, same lock
-			instance->currentWorld->UnlockGame();
-		}
+		// Everything the ENGINE draws into this frame — the OnGUI sweep, the retained tree,
+		// the dev console — comes through ONE seam call; this backend never knows the list.
+		nuke::Ui::EmitFrame();
 		ImGui::Render();
 
 		ImDrawData* dd = ImGui::GetDrawData();
