@@ -9,6 +9,7 @@
 #include <API/Model/Component.h>
 #include <API/Model/Texture.h>
 #include <API/Model/resdb.h>
+#include <API/Model/Jobs.h>   // RunOnMain: Run() is on the module thread, the render hook list is the renderer's
 #include <imgui.h>
 #include <cstring>
 #include <map>
@@ -334,7 +335,7 @@ struct NukeGUIModule : public NUKEModule
 		instance = inst; stopped = false;
 		SetGUIBackend(&backend);                                  // nuke::GUI() now forwards here
 		if (instance && instance->render)
-			instance->render->setOnRender([this] { Frame(); });
+			nuke::Jobs::RunOnMain([this] { if (instance && instance->render && !stopped) instance->render->setOnRender([this] { Frame(); }); });
 	}
 
 	bool HasSettings() override { return false; }
